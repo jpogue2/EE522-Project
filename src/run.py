@@ -18,9 +18,9 @@ OUTPUT_DIR = "results"
 SERIAL_PORT = '/dev/cu.usbmodem196816201'
 BAUD_RATE = 115200
 
-BASELINE_SEC = 3
-POST_SEC = 3
-REST_SEC = 3
+BASELINE_SEC = 2
+POST_SEC = 2
+REST_SEC = 0
 SMOOTH_WINDOW = 25
 
 AMBIG = [0, 45, 135, 180, 225, 315]
@@ -34,6 +34,8 @@ N_DIST_DIST = 3
 # ------------------------
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+sd.default.device = (None, 4)
 
 # --- Serial ---
 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
@@ -70,14 +72,11 @@ def play_audio(path):
 # --- Plotting ---
 def make_plot(csv_path):
     df = pd.read_csv(csv_path)
-
     df["gsr_raw"] = pd.to_numeric(df["gsr_raw"], errors="coerce")
     df = df.dropna()
 
-    # --- Build continuous timeline ---
     df["time_cont"] = 0.0
     offset = 0.0
-
     phase_bounds = {}
 
     for phase in ["baseline", "stimulus", "post"]:
@@ -85,30 +84,20 @@ def make_plot(csv_path):
         if mask.any():
             t = df.loc[mask, "elapsed_sec"].values
             t = t - t[0]
-
             df.loc[mask, "time_cont"] = t + offset
-
             phase_bounds[phase] = (offset, offset + t[-1])
-
             offset += t[-1]
 
-    # --- Smooth + normalize ---
     df["smooth"] = df["gsr_raw"].rolling(SMOOTH_WINDOW, center=True).mean()
     baseline_mean = df[df["phase"] == "baseline"]["gsr_raw"].mean()
     df["norm"] = df["smooth"] - baseline_mean
 
-    # --- Plot ---
     plt.figure(figsize=(10, 4))
     plt.plot(df["time_cont"], df["norm"], label="GSR")
 
-    # --- Add annotations ---
-    stim_start = phase_bounds["stimulus"][0]
-    stim_end   = phase_bounds["stimulus"][1]
-
-    plt.axvline(stim_start, linestyle="--", linewidth=2, label="Stimulus Start")
-    plt.axvline(stim_end, linestyle="--", linewidth=2, label="Stimulus End")
-
-    # Optional shading (very nice visually)
+    stim_start, stim_end = phase_bounds["stimulus"]
+    plt.axvline(stim_start, linestyle="--", linewidth=2, label="Start")
+    plt.axvline(stim_end, linestyle="--", linewidth=2, label="End")
     plt.axvspan(stim_start, stim_end, alpha=0.15)
 
     plt.xlabel("Time (s)")
@@ -132,7 +121,6 @@ def record_stimulus(audio_file, trial_idx, label):
         writer = csv.writer(f)
         writer.writerow(["timestamp", "elapsed_sec", "gsr_raw", "phase"])
 
-        # baseline
         t0 = time.time()
         while time.time() - t0 < BASELINE_SEC:
             val = read_sample()
@@ -140,13 +128,11 @@ def record_stimulus(audio_file, trial_idx, label):
                 now = time.time()
                 writer.writerow([now, now - t0, val, "baseline"])
 
-        # stimulus
         data, sr = sf.read(audio_file)
         stim_start = time.time()
         sd.play(data, sr)
 
         duration = len(data) / sr
-
         while time.time() - stim_start < duration:
             val = read_sample()
             if val is not None:
@@ -155,7 +141,6 @@ def record_stimulus(audio_file, trial_idx, label):
 
         sd.stop()
 
-        # post
         post_start = time.time()
         while time.time() - post_start < POST_SEC:
             val = read_sample()
@@ -175,11 +160,11 @@ for f in os.listdir(AUDIO_DIR):
 
 all_files = [f for files in groups.values() for f in files]
 
-# --- Priming trials ---
+# --- Priming (guaranteed count) ---
 priming_trials = []
 angles_available = list(set(get_angle(f) for f in all_files))
 
-for _ in range(PRIMING_N):
+while len(priming_trials) < PRIMING_N:
     angle = random.choice(angles_available)
     candidates = [f for f in all_files if get_angle(f) == angle]
     if len(candidates) >= 2:
@@ -208,25 +193,28 @@ amb_dist = [t for t in all_trials if t[0] == "AMBIG_DIST"]
 amb_amb  = [t for t in all_trials if t[0] == "AMBIG_AMBIG"]
 dist_dist = [t for t in all_trials if t[0] == "DIST_DIST"]
 
+# --- Enforce exact counts ---
+if len(amb_dist) < N_AMBIG_DIST or len(amb_amb) < N_AMBIG_AMBIG or len(dist_dist) < N_DIST_DIST:
+    raise ValueError("Not enough stimuli to satisfy trial counts.")
+
 main_trials = []
-main_trials += random.sample(amb_dist, min(N_AMBIG_DIST, len(amb_dist)))
-main_trials += random.sample(amb_amb, min(N_AMBIG_AMBIG, len(amb_amb)))
-main_trials += random.sample(dist_dist, min(N_DIST_DIST, len(dist_dist)))
+main_trials += random.sample(amb_dist, N_AMBIG_DIST)
+main_trials += random.sample(amb_amb, N_AMBIG_AMBIG)
+main_trials += random.sample(dist_dist, N_DIST_DIST)
 
 random.shuffle(main_trials)
 
 trials = priming_trials + main_trials
 
-# --- Save responses header ---
+# --- Save header ---
 with open(responses_path, "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["trial_type", "sound", "file_A", "file_B", "choice"])
 
-print(f"\nTotal trials: {len(trials)}")
+print(f"\nPriming: {len(priming_trials)} | Main: {len(main_trials)} | Total: {len(trials)}")
 
-# --- Run experiment ---
+# --- Run ---
 for idx, (trial_type, sound, f1, f2) in enumerate(trials, 1):
-
     print(f"\n=== Trial {idx} ({trial_type}) ===")
 
     pair = [f1, f2]
@@ -250,8 +238,6 @@ for idx, (trial_type, sound, f1, f2) in enumerate(trials, 1):
     with open(responses_path, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([trial_type, sound, A_file, B_file, choice])
-
-    print(f"Saved response: {choice}")
 
     time.sleep(REST_SEC)
 
