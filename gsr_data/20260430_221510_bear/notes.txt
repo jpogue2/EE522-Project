@@ -1,3 +1,0 @@
-Audio: audio/bear.wav
-Timestamp: 20260430_221510
-Notes:

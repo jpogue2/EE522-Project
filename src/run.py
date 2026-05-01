@@ -3,8 +3,11 @@ import time
 import csv
 import os
 from datetime import datetime
+
 import sounddevice as sd
 import soundfile as sf
+import pandas as pd
+import matplotlib.pyplot as plt
 
 # -------- CONFIG --------
 SERIAL_PORT = '/dev/cu.usbmodem196816201'
@@ -24,13 +27,15 @@ OUTPUT_DIR = "gsr_data"
 BASELINE_SEC = 3
 POST_SEC = 3
 REST_SEC = 5
+SMOOTH_WINDOW = 25
 # ------------------------
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- Serial setup ---
 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-time.sleep(2)
+time.sleep(3)
+ser.reset_input_buffer()
 
 # --- Participant setup ---
 participant_id = input("Enter participant ID: ").strip()
@@ -51,23 +56,87 @@ with open(notes_path, "w") as nf:
 
 print(f"\nSaving all data to: {participant_dir}")
 
-# --- Helper: read one sample ---
+
+# --- Serial read helper ---
 def read_sample():
-    if ser.in_waiting:
+    try:
         line = ser.readline().decode(errors='ignore').strip()
-        try:
+        if line:
             return float(line)
-        except:
-            return None
+    except:
+        pass
     return None
 
 
-# --- Core recording function ---
+# --- Plotting ---
+def make_plot(csv_path):
+    df = pd.read_csv(csv_path)
+
+    df["gsr_raw"] = pd.to_numeric(df["gsr_raw"], errors="coerce")
+    df = df.dropna()
+
+    # --- Build continuous timeline (NO GAPS) ---
+    df["time_cont"] = 0.0
+    offset = 0.0
+
+    for phase in ["baseline", "stimulus", "post"]:
+        mask = df["phase"] == phase
+        if mask.any():
+            t = df.loc[mask, "elapsed_sec"].values
+            t = t - t[0]  # normalize phase to start at 0
+
+            df.loc[mask, "time_cont"] = t + offset
+            offset += t[-1]
+
+    # --- Smooth signal ---
+    df["gsr_smooth"] = df["gsr_raw"].rolling(SMOOTH_WINDOW, center=True).mean()
+
+    # --- Normalize to baseline ---
+    baseline_mean = df[df["phase"] == "baseline"]["gsr_raw"].mean()
+    df["gsr_norm"] = df["gsr_smooth"] - baseline_mean
+
+    # --- Plot ---
+    plt.figure(figsize=(12, 5))
+
+    for phase, color in zip(
+        ["baseline", "stimulus", "post"],
+        ["blue", "red", "green"]
+    ):
+        subset = df[df["phase"] == phase]
+        plt.plot(subset["time_cont"], subset["gsr_norm"], label=phase)
+
+    # Add vertical separators
+    transitions = []
+    for phase in ["baseline", "stimulus"]:
+        t = df[df["phase"] == phase]["time_cont"]
+        if len(t) > 0:
+            transitions.append(t.max())
+
+    for t in transitions:
+        plt.axvline(t, linestyle="--", linewidth=1)
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("GSR (Δ from baseline)")
+    plt.title(os.path.basename(csv_path))
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    png_path = csv_path.replace(".csv", ".png")
+    plt.savefig(png_path)
+    plt.close()
+
+    print(f"Saved plot: {png_path}")
+
+
+# --- Trial recording ---
 def record_trial(audio_file):
     base_name = os.path.splitext(os.path.basename(audio_file))[0]
     csv_path = os.path.join(participant_dir, f"{base_name}.csv")
 
     print(f"\n=== Trial: {base_name} ===")
+
+    ser.reset_input_buffer()
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -112,7 +181,10 @@ def record_trial(audio_file):
 
     print(f"Saved: {csv_path}")
 
-    # --- Trial notes ---
+    # --- Generate plot ---
+    make_plot(csv_path)
+
+    # --- Notes ---
     note = input("Enter notes for this trial (or press Enter to skip): ")
     if note.strip():
         with open(notes_path, "a") as nf:
