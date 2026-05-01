@@ -1,0 +1,11 @@
+Participant: 1
+Session start: 20260430_221732
+Audio order:
+audio/bear.wav
+audio/death_whistle.wav
+audio/scream.wav
+audio/tiger.wav
+audio/white_noise.wav
+audio/zombie.wav
+
+Notes:
