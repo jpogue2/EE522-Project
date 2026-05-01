@@ -1,63 +1,45 @@
-import serial
+import os
+import random
 import time
 import csv
-import os
 from datetime import datetime
 
 import sounddevice as sd
 import soundfile as sf
+import serial
+
 import pandas as pd
 import matplotlib.pyplot as plt
 
 # -------- CONFIG --------
+AUDIO_DIR = "audio"
+OUTPUT_DIR = "results"
+
 SERIAL_PORT = '/dev/cu.usbmodem196816201'
 BAUD_RATE = 115200
 
-AUDIO_FILES = [
-    "audio/bear.wav",
-    "audio/death_whistle.wav",
-    "audio/scream.wav",
-    "audio/tiger.wav",
-    "audio/white_noise.wav",
-    "audio/zombie.wav"
-]
-
-OUTPUT_DIR = "gsr_data"
-
 BASELINE_SEC = 3
 POST_SEC = 3
-REST_SEC = 5
+REST_SEC = 3
 SMOOTH_WINDOW = 25
+
+AMBIG = [0, 45, 135, 180, 225, 315]
+DIST  = [90, 270]
+
+PRIMING_N = 2
+
+N_AMBIG_DIST = 6
+N_AMBIG_AMBIG = 3
+N_DIST_DIST = 3
 # ------------------------
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- Serial setup ---
+# --- Serial ---
 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
 time.sleep(3)
 ser.reset_input_buffer()
 
-# --- Participant setup ---
-participant_id = input("Enter participant ID: ").strip()
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-participant_dir = os.path.join(OUTPUT_DIR, f"{timestamp}_{participant_id}")
-os.makedirs(participant_dir, exist_ok=True)
-
-notes_path = os.path.join(participant_dir, "notes.txt")
-
-with open(notes_path, "w") as nf:
-    nf.write(f"Participant: {participant_id}\n")
-    nf.write(f"Session start: {timestamp}\n")
-    nf.write("Audio order:\n")
-    for a in AUDIO_FILES:
-        nf.write(f"{a}\n")
-    nf.write("\nNotes:\n")
-
-print(f"\nSaving all data to: {participant_dir}")
-
-
-# --- Serial read helper ---
 def read_sample():
     try:
         line = ser.readline().decode(errors='ignore').strip()
@@ -67,6 +49,23 @@ def read_sample():
         pass
     return None
 
+# --- Participant ---
+participant_id = input("Enter participant ID: ").strip()
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+out_dir = os.path.join(OUTPUT_DIR, f"{timestamp}_{participant_id}")
+os.makedirs(out_dir, exist_ok=True)
+
+responses_path = os.path.join(out_dir, "responses.csv")
+
+# --- Helpers ---
+def get_angle(path):
+    return int(os.path.basename(path).split("_")[-1].replace(".wav", ""))
+
+def play_audio(path):
+    data, sr = sf.read(path)
+    sd.play(data, sr)
+    sd.wait()
 
 # --- Plotting ---
 def make_plot(csv_path):
@@ -75,66 +74,57 @@ def make_plot(csv_path):
     df["gsr_raw"] = pd.to_numeric(df["gsr_raw"], errors="coerce")
     df = df.dropna()
 
-    # --- Build continuous timeline (NO GAPS) ---
+    # --- Build continuous timeline ---
     df["time_cont"] = 0.0
     offset = 0.0
+
+    phase_bounds = {}
 
     for phase in ["baseline", "stimulus", "post"]:
         mask = df["phase"] == phase
         if mask.any():
             t = df.loc[mask, "elapsed_sec"].values
-            t = t - t[0]  # normalize phase to start at 0
+            t = t - t[0]
 
             df.loc[mask, "time_cont"] = t + offset
+
+            phase_bounds[phase] = (offset, offset + t[-1])
+
             offset += t[-1]
 
-    # --- Smooth signal ---
-    df["gsr_smooth"] = df["gsr_raw"].rolling(SMOOTH_WINDOW, center=True).mean()
-
-    # --- Normalize to baseline ---
+    # --- Smooth + normalize ---
+    df["smooth"] = df["gsr_raw"].rolling(SMOOTH_WINDOW, center=True).mean()
     baseline_mean = df[df["phase"] == "baseline"]["gsr_raw"].mean()
-    df["gsr_norm"] = df["gsr_smooth"] - baseline_mean
+    df["norm"] = df["smooth"] - baseline_mean
 
     # --- Plot ---
-    plt.figure(figsize=(12, 5))
+    plt.figure(figsize=(10, 4))
+    plt.plot(df["time_cont"], df["norm"], label="GSR")
 
-    for phase, color in zip(
-        ["baseline", "stimulus", "post"],
-        ["blue", "red", "green"]
-    ):
-        subset = df[df["phase"] == phase]
-        plt.plot(subset["time_cont"], subset["gsr_norm"], label=phase)
+    # --- Add annotations ---
+    stim_start = phase_bounds["stimulus"][0]
+    stim_end   = phase_bounds["stimulus"][1]
 
-    # Add vertical separators
-    transitions = []
-    for phase in ["baseline", "stimulus"]:
-        t = df[df["phase"] == phase]["time_cont"]
-        if len(t) > 0:
-            transitions.append(t.max())
+    plt.axvline(stim_start, linestyle="--", linewidth=2, label="Stimulus Start")
+    plt.axvline(stim_end, linestyle="--", linewidth=2, label="Stimulus End")
 
-    for t in transitions:
-        plt.axvline(t, linestyle="--", linewidth=1)
+    # Optional shading (very nice visually)
+    plt.axvspan(stim_start, stim_end, alpha=0.15)
 
     plt.xlabel("Time (s)")
-    plt.ylabel("GSR (Δ from baseline)")
+    plt.ylabel("ΔGSR")
     plt.title(os.path.basename(csv_path))
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
 
-    png_path = csv_path.replace(".csv", ".png")
-    plt.savefig(png_path)
+    plt.savefig(csv_path.replace(".csv", ".png"))
     plt.close()
 
-    print(f"Saved plot: {png_path}")
-
-
-# --- Trial recording ---
-def record_trial(audio_file):
-    base_name = os.path.splitext(os.path.basename(audio_file))[0]
-    csv_path = os.path.join(participant_dir, f"{base_name}.csv")
-
-    print(f"\n=== Trial: {base_name} ===")
+# --- Recording ---
+def record_stimulus(audio_file, trial_idx, label):
+    name = os.path.splitext(os.path.basename(audio_file))[0]
+    csv_path = os.path.join(out_dir, f"trial{trial_idx}_{label}_{name}.csv")
 
     ser.reset_input_buffer()
 
@@ -142,24 +132,20 @@ def record_trial(audio_file):
         writer = csv.writer(f)
         writer.writerow(["timestamp", "elapsed_sec", "gsr_raw", "phase"])
 
-        # --- BASELINE ---
-        print(f"Baseline ({BASELINE_SEC}s)...")
+        # baseline
         t0 = time.time()
-
         while time.time() - t0 < BASELINE_SEC:
             val = read_sample()
             if val is not None:
                 now = time.time()
                 writer.writerow([now, now - t0, val, "baseline"])
 
-        # --- STIMULUS ---
-        print(f"Playing: {audio_file}")
-        data, samplerate = sf.read(audio_file)
-
+        # stimulus
+        data, sr = sf.read(audio_file)
         stim_start = time.time()
-        sd.play(data, samplerate)
+        sd.play(data, sr)
 
-        duration = len(data) / samplerate
+        duration = len(data) / sr
 
         while time.time() - stim_start < duration:
             val = read_sample()
@@ -169,35 +155,104 @@ def record_trial(audio_file):
 
         sd.stop()
 
-        # --- POST ---
-        print(f"Post-stimulus ({POST_SEC}s)...")
+        # post
         post_start = time.time()
-
         while time.time() - post_start < POST_SEC:
             val = read_sample()
             if val is not None:
                 now = time.time()
                 writer.writerow([now, now - post_start, val, "post"])
 
+    make_plot(csv_path)
     print(f"Saved: {csv_path}")
 
-    # --- Generate plot ---
-    make_plot(csv_path)
+# --- Group files ---
+groups = {}
+for f in os.listdir(AUDIO_DIR):
+    if f.endswith(".wav"):
+        name, angle = f.replace(".wav", "").rsplit("_", 1)
+        groups.setdefault(name, []).append(os.path.join(AUDIO_DIR, f))
 
-    # --- Notes ---
-    note = input("Enter notes for this trial (or press Enter to skip): ")
-    if note.strip():
-        with open(notes_path, "a") as nf:
-            nf.write(f"{base_name}: {note}\n")
+all_files = [f for files in groups.values() for f in files]
 
+# --- Priming trials ---
+priming_trials = []
+angles_available = list(set(get_angle(f) for f in all_files))
+
+for _ in range(PRIMING_N):
+    angle = random.choice(angles_available)
+    candidates = [f for f in all_files if get_angle(f) == angle]
+    if len(candidates) >= 2:
+        f1, f2 = random.sample(candidates, 2)
+        priming_trials.append(("PRIMING", "mixed", f1, f2))
+
+# --- Main trials ---
+all_trials = []
+for sound, files in groups.items():
+    amb = [f for f in files if get_angle(f) in AMBIG]
+    dist = [f for f in files if get_angle(f) in DIST]
+
+    for a in amb:
+        for d in dist:
+            all_trials.append(("AMBIG_DIST", sound, a, d))
+
+    for i in range(len(amb)):
+        for j in range(i+1, len(amb)):
+            all_trials.append(("AMBIG_AMBIG", sound, amb[i], amb[j]))
+
+    for i in range(len(dist)):
+        for j in range(i+1, len(dist)):
+            all_trials.append(("DIST_DIST", sound, dist[i], dist[j]))
+
+amb_dist = [t for t in all_trials if t[0] == "AMBIG_DIST"]
+amb_amb  = [t for t in all_trials if t[0] == "AMBIG_AMBIG"]
+dist_dist = [t for t in all_trials if t[0] == "DIST_DIST"]
+
+main_trials = []
+main_trials += random.sample(amb_dist, min(N_AMBIG_DIST, len(amb_dist)))
+main_trials += random.sample(amb_amb, min(N_AMBIG_AMBIG, len(amb_amb)))
+main_trials += random.sample(dist_dist, min(N_DIST_DIST, len(dist_dist)))
+
+random.shuffle(main_trials)
+
+trials = priming_trials + main_trials
+
+# --- Save responses header ---
+with open(responses_path, "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["trial_type", "sound", "file_A", "file_B", "choice"])
+
+print(f"\nTotal trials: {len(trials)}")
 
 # --- Run experiment ---
-for audio in AUDIO_FILES:
-    input(f"\nPress Enter to start trial for {audio}...")
+for idx, (trial_type, sound, f1, f2) in enumerate(trials, 1):
 
-    record_trial(audio)
+    print(f"\n=== Trial {idx} ({trial_type}) ===")
+
+    pair = [f1, f2]
+    random.shuffle(pair)
+    A_file, B_file = pair
+
+    input("Press Enter for A...")
+    record_stimulus(A_file, idx, "A")
 
     print(f"Resting ({REST_SEC}s)...")
+    time.sleep(REST_SEC)
+
+    input("Press Enter for B...")
+    record_stimulus(B_file, idx, "B")
+
+    while True:
+        choice = input("Which was scarier? (A/B): ").strip().upper()
+        if choice in ["A", "B"]:
+            break
+
+    with open(responses_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([trial_type, sound, A_file, B_file, choice])
+
+    print(f"Saved response: {choice}")
+
     time.sleep(REST_SEC)
 
 print("\nExperiment complete.")

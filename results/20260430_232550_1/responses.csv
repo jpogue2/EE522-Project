@@ -1,0 +1,7 @@
+trial_type,sound,file_A,file_B,choice
+PRIMING,mixed,audio/tiger_270.wav,audio/bear_270.wav,B
+PRIMING,mixed,audio/death_whistle_270.wav,audio/white_noise_270.wav,A
+PRIMING,mixed,audio/bear_90.wav,audio/scream_90.wav,B
+PRIMING,mixed,audio/zombie_270.wav,audio/tiger_270.wav,A
+PRIMING,mixed,audio/zombie_180.wav,audio/death_whistle_180.wav,B
+AMBIG_DIST,zombie,audio/zombie_315.wav,audio/zombie_270.wav,A
