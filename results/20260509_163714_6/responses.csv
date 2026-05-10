@@ -1,0 +1,15 @@
+trial_type,sound,file_A,file_B,choice
+PRIMING,mixed,audio/tiger_45.wav,audio/white_noise_45.wav,B
+PRIMING,mixed,audio/death_whistle_315.wav,audio/bear_315.wav,A
+AMBIG_AMBIG,zombie,audio/zombie_45.wav,audio/zombie_225.wav,A
+AMBIG_DIST,tiger,audio/tiger_90.wav,audio/tiger_45.wav,B
+DIST_DIST,zombie,audio/zombie_270.wav,audio/zombie_90.wav,A
+AMBIG_DIST,death_whistle,audio/death_whistle_180.wav,audio/death_whistle_90.wav,A
+AMBIG_AMBIG,white_noise,audio/white_noise_0.wav,audio/white_noise_225.wav,A
+AMBIG_DIST,scream,audio/scream_180.wav,audio/scream_90.wav,B
+AMBIG_DIST,scream,audio/scream_270.wav,audio/scream_45.wav,B
+DIST_DIST,bear,audio/bear_270.wav,audio/bear_90.wav,B
+AMBIG_DIST,scream,audio/scream_270.wav,audio/scream_225.wav,B
+AMBIG_DIST,scream,audio/scream_90.wav,audio/scream_0.wav,B
+AMBIG_AMBIG,white_noise,audio/white_noise_180.wav,audio/white_noise_315.wav,A
+DIST_DIST,scream,audio/scream_270.wav,audio/scream_90.wav,B

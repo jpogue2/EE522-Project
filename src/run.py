@@ -2,12 +2,11 @@ import os
 import random
 import time
 import csv
+import subprocess
 from datetime import datetime
 
-import sounddevice as sd
 import soundfile as sf
 import serial
-
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -15,7 +14,7 @@ import matplotlib.pyplot as plt
 AUDIO_DIR = "audio"
 OUTPUT_DIR = "results"
 
-SERIAL_PORT = '/dev/cu.usbmodem196816201'
+SERIAL_PORT = "/dev/cu.usbmodem196816201"
 BAUD_RATE = 115200
 
 BASELINE_SEC = 2
@@ -24,7 +23,7 @@ REST_SEC = 0
 SMOOTH_WINDOW = 25
 
 AMBIG = [0, 45, 135, 180, 225, 315]
-DIST  = [90, 270]
+DIST = [90, 270]
 
 PRIMING_N = 2
 
@@ -35,8 +34,6 @@ N_DIST_DIST = 3
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-sd.default.device = (None, 4)
-
 # --- Serial ---
 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
 time.sleep(3)
@@ -44,10 +41,10 @@ ser.reset_input_buffer()
 
 def read_sample():
     try:
-        line = ser.readline().decode(errors='ignore').strip()
+        line = ser.readline().decode(errors="ignore").strip()
         if line:
             return float(line)
-    except:
+    except Exception:
         pass
     return None
 
@@ -64,10 +61,8 @@ responses_path = os.path.join(out_dir, "responses.csv")
 def get_angle(path):
     return int(os.path.basename(path).split("_")[-1].replace(".wav", ""))
 
-def play_audio(path):
-    data, sr = sf.read(path)
-    sd.play(data, sr)
-    sd.wait()
+def start_audio(path):
+    return subprocess.Popen(["afplay", path])
 
 # --- Plotting ---
 def make_plot(csv_path):
@@ -95,10 +90,11 @@ def make_plot(csv_path):
     plt.figure(figsize=(10, 4))
     plt.plot(df["time_cont"], df["norm"], label="GSR")
 
-    stim_start, stim_end = phase_bounds["stimulus"]
-    plt.axvline(stim_start, linestyle="--", linewidth=2, label="Start")
-    plt.axvline(stim_end, linestyle="--", linewidth=2, label="End")
-    plt.axvspan(stim_start, stim_end, alpha=0.15)
+    if "stimulus" in phase_bounds:
+        stim_start, stim_end = phase_bounds["stimulus"]
+        plt.axvline(stim_start, linestyle="--", linewidth=2, label="Start")
+        plt.axvline(stim_end, linestyle="--", linewidth=2, label="End")
+        plt.axvspan(stim_start, stim_end, alpha=0.15)
 
     plt.xlabel("Time (s)")
     plt.ylabel("ΔGSR")
@@ -121,6 +117,7 @@ def record_stimulus(audio_file, trial_idx, label):
         writer = csv.writer(f)
         writer.writerow(["timestamp", "elapsed_sec", "gsr_raw", "phase"])
 
+        # Baseline period
         t0 = time.time()
         while time.time() - t0 < BASELINE_SEC:
             val = read_sample()
@@ -128,19 +125,28 @@ def record_stimulus(audio_file, trial_idx, label):
                 now = time.time()
                 writer.writerow([now, now - t0, val, "baseline"])
 
-        data, sr = sf.read(audio_file)
+        # Play audio with macOS native player
+        duration = sf.info(audio_file).duration
         stim_start = time.time()
-        sd.play(data, sr)
+        proc = start_audio(audio_file)
 
-        duration = len(data) / sr
-        while time.time() - stim_start < duration:
-            val = read_sample()
-            if val is not None:
-                now = time.time()
-                writer.writerow([now, now - stim_start, val, "stimulus"])
+        try:
+            while time.time() - stim_start < duration:
+                val = read_sample()
+                if val is not None:
+                    now = time.time()
+                    writer.writerow([now, now - stim_start, val, "stimulus"])
+        finally:
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
-        sd.stop()
-
+        # Post period
         post_start = time.time()
         while time.time() - post_start < POST_SEC:
             val = read_sample()
@@ -159,6 +165,9 @@ for f in os.listdir(AUDIO_DIR):
         groups.setdefault(name, []).append(os.path.join(AUDIO_DIR, f))
 
 all_files = [f for files in groups.values() for f in files]
+
+if not all_files:
+    raise ValueError(f"No .wav files found in {AUDIO_DIR}")
 
 # --- Priming (guaranteed count) ---
 priming_trials = []
@@ -182,15 +191,15 @@ for sound, files in groups.items():
             all_trials.append(("AMBIG_DIST", sound, a, d))
 
     for i in range(len(amb)):
-        for j in range(i+1, len(amb)):
+        for j in range(i + 1, len(amb)):
             all_trials.append(("AMBIG_AMBIG", sound, amb[i], amb[j]))
 
     for i in range(len(dist)):
-        for j in range(i+1, len(dist)):
+        for j in range(i + 1, len(dist)):
             all_trials.append(("DIST_DIST", sound, dist[i], dist[j]))
 
 amb_dist = [t for t in all_trials if t[0] == "AMBIG_DIST"]
-amb_amb  = [t for t in all_trials if t[0] == "AMBIG_AMBIG"]
+amb_amb = [t for t in all_trials if t[0] == "AMBIG_AMBIG"]
 dist_dist = [t for t in all_trials if t[0] == "DIST_DIST"]
 
 # --- Enforce exact counts ---
