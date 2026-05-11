@@ -155,7 +155,7 @@ def record_stimulus(audio_file, trial_idx, label):
                 writer.writerow([now, now - post_start, val, "post"])
 
     make_plot(csv_path)
-    print(f"Saved: {csv_path}")
+    # print(f"Saved: {csv_path}")
 
 # --- Group files ---
 groups = {}
@@ -224,7 +224,7 @@ print(f"\nPriming: {len(priming_trials)} | Main: {len(main_trials)} | Total: {le
 
 # --- Run ---
 for idx, (trial_type, sound, f1, f2) in enumerate(trials, 1):
-    print(f"\n=== Trial {idx} ({trial_type}) ===")
+    print(f"\n=== Trial {idx} ===")
 
     pair = [f1, f2]
     random.shuffle(pair)
